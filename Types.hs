@@ -1,8 +1,10 @@
 module Iteratee.Types where
 
 ------------------------------------------------------------------------------
-import qualified Control.Applicative as A
-import           Control.Exception (SomeException)
+import Control.Applicative
+import Control.Exception
+import Data.Monoid
+
 
 ------------------------------------------------------------------------------
 -- | Represent a message as an Exception.
@@ -10,18 +12,28 @@ type Msg = SomeException
 
 
 ------------------------------------------------------------------------------
--- | A stream is a sequence of elements broken into Chunks. It can either be
+-- | The input is a sequence of elements broken into chunks. It can either be
 -- in the End state, which means the stream has no more data, or it can be in
--- the Chunk state, which means the stream is continuing.
-data S e = End (Maybe Msg)
-         | Chunk [e]
+-- the More state, which means the stream has more data.
+data In e = End (Maybe Msg) | More [e]
   deriving (Show)
 
+instance Eq i => Eq (In i) where
+    (End _)     == (End _)  = True
+    (More x)    == (More y) = x == y
+    _           == _        = False
 
-------------------------------------------------------------------------------
--- | Type alias for a step function that can process new data and make a new
--- state. 
-type Step e m a = S e -> m (I e m a, S e)
+instance (Eq i, Monoid i) => Monoid (In i) where
+    mempty                          = More mempty  
+    x@(End _)   `mappend` _         = x
+    x           `mappend` y@(End _) = if x == mempty
+                                          then y
+                                          else x
+    (More x)    `mappend` (More y)  = More (x `mappend` y)
+
+instance Functor In where
+    fmap _ (End xs)     = End xs
+    fmap f (More xs)    = More $ fmap f xs
 
 
 ------------------------------------------------------------------------------
@@ -35,40 +47,43 @@ type Step e m a = S e -> m (I e m a, S e)
 -- given a stream in the End state will move to the Done state.
 --
 -- The monad m can be the identity monad for pure computations.
-data I e m a = Done !a
-             | Cont !(Maybe Msg) (Step e m a)
+data I e m a = Done a
+             | Cont (Maybe Msg) (In e -> m (I e m a, In e))
 
-
-------------------------------------------------------------------------------
--- | An iteratee is a functor.
-(<$>) :: Functor m => (a -> b) -> I e m a -> I e m b
-f <$> (Done x)          = Done (f x)
-f <$> (Cont msg step)   = Cont msg (fmap next . step)
+fmapI :: Functor m => (a -> b) -> I e m a -> I e m b
+fmapI f (Done xs)       = Done $ f xs
+fmapI f (Cont msg go)   = Cont msg $ fmap after . go
   where
-    next (Done x, s)    = (Done (f x), s)
-    next (i, s)         = (f <$> i, s)
+    after (Done xs, s)  = (Done (f xs), s)
+    after (i, s)        = (fmapI f i, s)
+
+pureI :: a -> I e m a
+pureI = Done
+
+appI (Done f)       i     = fmap f i
+appI (Cont msg go)  i   = Cont msg (fmap after . go)
+  where
+    after (Done f, s)   = (fmap f i, s)
+    after (i', s)       = (i' <*> i, s) 
+
+bindI :: (Applicative m, Monad m) => I e m a -> (a -> I e m b) -> I e m b
+bindI (Done xs)     f   = f xs
+bindI (Cont msg go) f   = Cont msg (\s -> go s >>= after)
+  where
+    after (Done xs, s') = case f xs of
+            Cont Nothing go'    -> go' s'
+            i                   -> pure (i, s')
 
 instance Functor m => Functor (I e m) where
-    fmap = (<$>)
+    fmap = fmapI
 
-
-------------------------------------------------------------------------------
--- | An iteratee is an applicative functor.
-pureI :: a -> I e m a
-pureI x = Done x
-
-(<*>) :: Functor m => I e m (a -> b) -> I e m a -> I e m b
-(Done f) <*> i          = f <$> i
-(Cont msg step) <*> i   = Cont msg (fmap next . step)
-  where
-    next (Done f, s)    = (f <$> i, s)
-    next (i', s)        = (i' <*> i, s)
-
-instance Functor m => A.Applicative (I e m) where
+instance Functor m => Applicative (I e m) where
     pure    = pureI
-    (<*>)   = (<*>)
+    (<*>)   = appI
+
+instance (Applicative m , Monad m) => Monad (I e m) where
+    return  = pureI
+    (>>=)   = bindI
 
 
 ------------------------------------------------------------------------------
--- | An iteratee is a monad.
-
