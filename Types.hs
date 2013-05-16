@@ -1,10 +1,17 @@
+{-# LANGUAGE NoMonomorphismRestriction #-}
+
 module Iteratee.Types where
 
 ------------------------------------------------------------------------------
 import Control.Applicative
 import Control.Exception
+import Control.Monad.Trans.Class
+import Data.Functor.Identity
 import Data.Monoid
+import Prelude hiding (drop, head)
 
+------------------------------------------------------------------------------
+import qualified    Prelude as P (drop, head)
 
 ------------------------------------------------------------------------------
 -- | Represent a message as an Exception.
@@ -74,6 +81,9 @@ bindI (Cont msg go) f   = Cont msg (\s -> go s >>= after)
             Cont Nothing go'    -> go' s'
             i                   -> pure (i, s')
 
+liftI :: (Applicative m, Monad m) => m a -> I e m a
+liftI m = Cont Nothing (\s -> m >>= \v -> return (return v, s))
+
 instance Functor m => Functor (I e m) where
     fmap = fmapI
 
@@ -84,6 +94,55 @@ instance Functor m => Applicative (I e m) where
 instance (Applicative m , Monad m) => Monad (I e m) where
     return  = pureI
     (>>=)   = bindI
+
+instance (Applicative m) => MonadTrans (I e) where
+    lift = liftI
+
+
+------------------------------------------------------------------------------
+-- | Enumerator
+
+type E e m a = I e m a -> m (I e m a)
+
+
+------------------------------------------------------------------------------
+-- | Enumeratee
+
+type Ee o i m a = I i m a -> I o m (I i m a)
+
+
+------------------------------------------------------------------------------
+-- 
+
+run :: Monad m => I e m a -> m a
+run (Done xs)           = return xs
+run (Cont Nothing go)   = go (End Nothing) >>= check
+  where
+    check (Done x, _)       = return x
+    check (Cont msg _,_)    = error $ "control message: " ++ show msg
+run (Cont (Just msg) go)    = error $ "control message: " ++ show msg
+
+
+continue :: (In e -> m (I e m a, In e)) -> I e m a
+continue = Cont Nothing
+
+continueM :: (Monad m, Monoid e, Eq e)
+          => (In e -> m (I e m a, In e))
+          -> m (I e m a, In e)
+continueM = \go -> return (continue go, mempty)
+
+doneM :: Monad m => a -> In e -> m (I e m a, In e)
+doneM x s = return (Done x, s)
+
+drop :: (Eq e, Monad m, Applicative m, Monoid e)
+     => Int
+     -> I e m ()
+drop 0      = return ()
+drop n      = continue $ next n
+  where
+    next n (More xs)
+      | length xs < n   = continueM $ next (n - length xs)
+    next n (More xs)    = doneM () $ More (P.drop n xs)
 
 
 ------------------------------------------------------------------------------
