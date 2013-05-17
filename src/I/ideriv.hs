@@ -1,7 +1,12 @@
 ------------------------------------------------------------------------------
+import Control.Monad (liftM2)
 import Prelude hiding (getLine)
 import System.IO.Error (catchIOError)
 ------------------------------------------------------------------------------
+
+
+------------------------------------------------------------------------------
+-- | ITERATEES
 
 
 -----------------------------------------------------------------------------
@@ -90,3 +95,75 @@ t110 = eval "abd\nxxx\nf" getLine
 
 t111 :: [String]
 t111 = eval "abd\nxxx\nf" getLines
+
+
+------------------------------------------------------------------------------
+-- | ENUMERATORS
+
+-- If I factor eval above (eval :: String -> I a -> a), I get the composition
+-- of run (run :: I a -> a) and enumString (enumString :: String -> I a -> I
+-- a).
+
+enumString :: String -> I a -> I a
+enumString ""       i           = i
+enumString (c:cs)   (More go)   = enumString cs $ go (Just c)
+enumString _        (Done x)    = Done x 
+
+run :: I a -> a
+run (More go)   = run $ go Nothing
+run (Done x)    = x
+
+-- This version of run will report an error if the process tries to get more
+-- data after receiving Nothing.
+run' :: I a -> a
+run' (More go)  = case go Nothing of
+        Done x  -> x
+        _       -> error "Divergent iteratee"
+
+
+------------------------------------------------------------------------------
+-- | Parsing combinators
+
+-- This iteratee will never receive Done.
+failure :: I a
+failure = More (const failure)
+
+-- Recognize the empty string.
+empty :: a -> I a
+empty = \x -> Done x
+
+-- One lifted character
+oneChar :: I LiftedChar
+oneChar = More Done
+
+-- Left-biased alternation
+(<!) :: I a -> I a -> I a
+(Done x)    <!  _           = Done x
+_           <!  (Done x)    = Done x
+(More go)   <!  (More go')  = More $ \c -> go c <! go' c
+
+-- Recognizes one character string that satisfies the given predicate.
+pSat :: (LiftedChar -> Bool) -> I LiftedChar
+pSat = \pred ->
+        oneChar >>= \c ->
+            if pred c
+                then return c
+                else failure
+
+-- The same as pSat except using regular Char.
+pSat' :: (Char -> Bool) -> I Char
+pSat' = \pred ->
+    oneChar >>= \c ->
+        case c of
+            Just c | pred c -> return c
+            _               -> failure
+
+-- Recognize one character string.
+one :: I Char
+one = oneChar >>= maybe failure return
+
+-- getLine with combinators
+pGetLine :: I String
+pGetLine = l <! liftM2 (:) one pGetLine
+  where
+    l = pSat (\c -> c == Just '\n' || c == Nothing) >> return ""
