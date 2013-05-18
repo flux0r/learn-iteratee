@@ -1,5 +1,5 @@
 ------------------------------------------------------------------------------
-import Control.Monad (liftM2)
+import Control.Monad (liftM2, liftM)
 import Prelude hiding (getLine)
 import System.IO.Error (catchIOError)
 ------------------------------------------------------------------------------
@@ -167,3 +167,87 @@ pGetLine :: I String
 pGetLine = l <! liftM2 (:) one pGetLine
   where
     l = pSat (\c -> c == Just '\n' || c == Nothing) >> return ""
+
+tpl :: String
+tpl = run $ enumString "abd\nxxx\nf" pGetLine
+
+tpl2 :: String
+tpl2 = run $ enumString "abd" pGetLine
+
+-- More efficient version of pGetLine. First, inline pSat and one.
+pGetLine1 :: I String
+pGetLine1 = l <! c
+  where
+    l = (oneChar >>= \lc -> case lc of
+            Just c | c /= '\n'  -> failure
+            _                   -> return "")
+    c = (oneChar >>= maybe failure return) >>= \c' ->
+            liftM (c':) pGetLine1
+
+tpl1 :: String
+tpl1 = run $ enumString "abd\nxxx\nf" pGetLine1
+
+-- Now use the fact that bind is associative.
+pGetLine2 :: I String
+pGetLine2 = l <! c
+  where
+    l = oneChar >>= (\lc -> case lc of
+            Just c | c /= '\n'  -> failure >> return ""
+            _                   -> return lc >> return "")
+    c = oneChar >>= (\lc -> maybe failure return lc >>= \c' ->
+            liftM (c':) pGetLine2)
+
+-- By the monad laws, failure >>= k === failure.
+pGetLine3 :: I String
+pGetLine3 = l <! c
+  where
+    l = oneChar >>= (\lc ->
+        case lc of
+            Just c | c /= '\n'  -> failure
+            _                   -> return "")
+    c = oneChar >>= (\lc ->
+        case lc of
+            Just c' -> liftM (c':) pGetLine3
+            _       -> failure)
+
+tpl3 :: String
+tpl3 = run $ enumString "abd\nxxx\nf" pGetLine3
+
+-- Use right distributivity.
+pGetLine4 :: I String
+pGetLine4 = oneChar >>= \lc -> l lc <! c lc
+  where
+    l = \lc' -> case lc' of
+        Just c | c /= '\n'  -> failure
+        _                   -> return ""
+    c = \lc' -> case lc' of
+        Just c'             -> liftM (c':) pGetLine4
+        _                   -> failure
+
+tpl4 :: String
+tpl4 = run $ enumString "abd\nxxx\nf" pGetLine4
+
+-- Pull out the case analysis.
+pGetLine5 :: I String
+pGetLine5 = oneChar >>= iter
+  where
+    iter (Just '\n')    = return "" <! liftM ('\n':) pGetLine5
+    iter Nothing        = return "" <! failure
+    iter (Just c)       = failure   <! liftM (c:) pGetLine5
+
+tpl5 :: String
+tpl5 = run $ enumString "abd\nxxx\nf" pGetLine5
+
+-- Finally, use the definition of <!.
+pGetLine' :: I String
+pGetLine' = oneChar >>= iter
+  where
+    iter (Just '\n')    = return ""
+    iter Nothing        = return ""
+    iter (Just c)       = liftM (c:) pGetLine'
+
+tp1' :: String
+tp1' = run $ enumString "abd\nxxx\nf" pGetLine'
+
+tp2' :: String
+tp2' = run $ enumString "ab" pGetLine'
