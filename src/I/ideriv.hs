@@ -251,3 +251,17 @@ tp1' = run $ enumString "abd\nxxx\nf" pGetLine'
 
 tp2' :: String
 tp2' = run $ enumString "ab" pGetLine'
+
+-- Parse a string.
+pString :: String -> I String
+pString ""      = empty ""
+pString (c:cs)  = liftM2 (:) (pSat' (== c)) (pString cs)
+
+pEnd :: a -> I a
+pEnd = \x -> pSat (== Nothing) >> return x
+
+pww :: String -> I String
+pww x = (pString x >>= pEnd) <! (one >>= \c -> pww (x ++ [c]))
+
+many :: I a -> ([a] -> I w) -> I w
+many p pk = (p >>= \a -> many p (pk . (a:))) <! pk []
